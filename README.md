@@ -1,16 +1,16 @@
 # Amazon Price Scraper Service
 
-Este é o serviço de **Scraping de Preços da Amazon**, desenvolvido em Python. Ele opera de forma assíncrona, consumindo uma lista local de produtos, raspando suas informações (Título, Preço atual, Moeda, e Imagem) e publicando os eventos de sucesso ou falha em um Broker de Mensageria **RabbitMQ**.
+Este é o serviço de **Scraping de Preços da Amazon**, desenvolvido em Python. Ele opera de forma assíncrona para varrer páginas de categorias de tecnologia da Amazon, paginar seus resultados, raspar os dados dos produtos individuais (Título, Preço atual, Moeda e Imagem) de forma resiliente contra bloqueios e publicar os eventos de sucesso ou falha em um Broker de Mensageria **RabbitMQ** ou gerar um relatório JSON consolidado localmente.
 
 ---
 
 ## 🛠️ Tecnologias Utilizadas
 
 - **Python 3.14.7** (Retrocompatível com 3.10+)
-- **HTTPX (com HTTP/2)**: Para requisições leves de baixa latência e evasão inteligente de bloqueios de rede.
-- **BeautifulSoup 4**: Para parsing e extração de dados do HTML estruturado.
-- **Playwright (Chromium Headless)**: Fallback automático utilizando um navegador real para carregar a página e contornar captchas se as requisições HTTP normais forem bloqueadas.
-- **Pika**: Cliente oficial do RabbitMQ para publicação de eventos.
+- **HTTPX (com HTTP/2)**: Para requisições leves de baixa latência e evasão de bloqueios.
+- **BeautifulSoup 4**: Para parsing de dados do HTML estruturado.
+- **Playwright (Chromium Headless)**: Fallback automático utilizando um navegador real simulado para carregar a listagem de páginas e páginas de produtos caso as requisições normais caiam em CAPTCHA ou bloqueios.
+- **Pika**: Cliente oficial do RabbitMQ para comunicação via protocolo AMQP/AMQPS.
 - **Python-dotenv**: Gerenciamento de segredos e variáveis de ambiente.
 
 ---
@@ -18,14 +18,14 @@ Este é o serviço de **Scraping de Preços da Amazon**, desenvolvido em Python.
 ## 📋 Pré-requisitos
 
 1. **Python 3.10+** (Testado e homologado no Python 3.14.7).
-2. **RabbitMQ** em execução (para envio dos eventos de mensageria).
+2. **RabbitMQ** (Instalado localmente via Docker ou uma instância de nuvem gratuita no **CloudAMQP**).
 
 ---
 
 ## 🚀 Instalação e Configuração
 
 ### 1. Criar e Ativar Ambiente Virtual
-Crie um ambiente virtual `.venv` para isolar as dependências do projeto:
+Crie um ambiente virtual `.venv` para isolar as dependências:
 
 ```powershell
 # No PowerShell (Windows):
@@ -49,90 +49,99 @@ pip install -r requirements.txt
 ```
 
 ### 3. Instalar o Navegador do Playwright
-Instale o binário do Chromium utilizado pelo Playwright como fallback de segurança contra captchas:
+Instale os binários do Chromium necessários para o fallback do Playwright:
 
 ```bash
 playwright install chromium
 ```
 
 ### 4. Configurar as Variáveis de Ambiente (`.env`)
-Certifique-se de configurar o arquivo `.env` localizado na raiz do projeto com as credenciais do seu RabbitMQ local ou de produção:
+Configure o arquivo `.env` na raiz da pasta `scrapping` para escolher entre o modo simulação (apenas salvar JSON local) ou modo publicação real no RabbitMQ (local ou na nuvem):
 
 ```ini
-# Configurações do RabbitMQ
+# --- Configurações do RabbitMQ ---
+# Defina como True para enviar as mensagens para o RabbitMQ, ou False para apenas gerar o JSON local
+RABBITMQ_ENABLED=False
+
+# URL de conexão AMQPS completa (Ideal para serviços em nuvem como o CloudAMQP)
+# OBS: Se definida, esta URL tem prioridade sobre as credenciais de host/port abaixo!
+RABBITMQ_URL=amqps://usuario:senha@jackal.rmq.cloudamqp.com/usuario
+
+# Credenciais individuais (Caso vá usar o RabbitMQ rodando no Docker local)
 RABBITMQ_HOST=localhost
 RABBITMQ_PORT=5672
 RABBITMQ_USER=guest
 RABBITMQ_PASS=guest
 RABBITMQ_EXCHANGE_EVENTS=price_events
 
-# Configurações do Scraper
+# --- Configurações do Scraper ---
 SCRAPE_DELAY_MIN=2
 SCRAPE_DELAY_MAX=5
 PLAYWRIGHT_HEADLESS=True
 MAX_CRAWL_PRODUCTS=100
-PRODUCTS_JSON_PATH=products.json
+OUTPUT_JSON_PATH=scraped_results.json
 ```
 
 ---
 
-## 📂 Arquivo de Entrada (`products.json`)
+## 🏃 Como Executar e Testar
 
-No modo de execução padrão em lote (Batch), o scraper consome o arquivo local configurado em `PRODUCTS_JSON_PATH` (padrão: `products.json`). Crie o arquivo na raiz da pasta com o seguinte formato:
-
-```json
-[
-  {
-    "product_id": 1,
-    "url": "https://www.amazon.com.br/dp/B09B8VGCR8"
-  },
-  {
-    "product_id": 2,
-    "url": "https://www.amazon.com.br/dp/B082XYKBLT"
-  }
-]
-```
-
----
-
-## 🏃 Como Executar os Modos do Scraper
-
-O script principal `main.py` aceita argumentos de linha de comando para definir a execução:
+O script principal `main.py` possui dois modos de execução:
 
 ### A. Executar em Lote (Modo Batch - Padrão)
-Lê o arquivo `products.json`, processa sequencialmente os produtos aplicando delays aleatórios, publica os eventos no RabbitMQ e finaliza a execução de forma limpa. Ideal para agendamentos (ex: Cron jobs rodando 2 vezes ao dia):
+O Scraper inicia navegando de forma paginada pelas categorias de Tecnologia da Amazon Brasil, descobrindo as URLs dos produtos em tempo real. Ele raspará os detalhes de cada produto até atingir a meta de sucessos definida em `MAX_CRAWL_PRODUCTS` (ex: **100 produtos**).
 
+Para rodar (ideal para rodar 2 vezes ao dia por exemplo):
 ```bash
 python main.py --mode batch
 # ou simplesmente:
 python main.py
 ```
+*Se `RABBITMQ_ENABLED=False`, as mensagens simuladas que seriam postadas na fila serão salvas compiladas em `scraped_results.json` e impressas de forma formatada no terminal.*
 
-### B. Executar um Teste Rápido de Raspagem
-Testa a raspagem de uma única URL diretamente no console para validação visual e de seletores HTML, **sem depender de conexão com o RabbitMQ**:
-
+### B. Executar um Teste de Raspagem Rápida
+Testa a raspagem de uma única URL diretamente no console para validar os seletores HTML, **sem depender de conexões com o RabbitMQ**:
 ```bash
 python main.py --mode test --url "https://www.amazon.com.br/dp/B09B8VGCR8"
 ```
 
-### C. Executar a Varredura Autônoma (Modo Crawler)
-Executa a busca autônoma de até 100 produtos de tecnologia na Amazon, extrai seus dados e publica os resultados no RabbitMQ com `product_id: null` para indexação inicial no banco de dados centralizado:
+---
 
-```bash
-python main.py --mode crawler
-```
+## 🐇 Simulando e Visualizando Mensagens com o RabbitMQ (Nuvem ou Docker)
+
+Criamos uma simulação completa onde você pode visualizar as mensagens trafegando em tempo real através de um consumidor fictício de backend.
+
+1. **Suba ou configure o RabbitMQ**:
+   - **Nuvem**: Crie uma conta grátis no [CloudAMQP](https://www.cloudamqp.com/), pegue o campo **AMQP URL** e cole no seu `.env` na variável `RABBITMQ_URL`.
+   - **Local**: Suba via Docker `docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management`.
+2. **Ative a Publicação no Scraper**:
+   Mude a linha do seu `.env` para `RABBITMQ_ENABLED=True`.
+3. **Inicie o Consumidor de Teste**:
+   Abra um terminal, ative o ambiente virtual e rode o ouvinte para receber mensagens:
+   ```bash
+   python test_consumer.py
+   ```
+4. **Execute o Scraper**:
+   Abra **outro terminal**, ative o ambiente virtual e rode o scraper:
+   ```bash
+   python main.py
+   ```
+5. **Acompanhe**:
+   - No terminal do `test_consumer.py`, você verá os dados das mensagens JSON caindo na tela instantaneamente à medida que o scraper as publica!
+   - No site do CloudAMQP (clicando no botão **RabbitMQ Manager**) ou em `http://localhost:15672` localmente, você pode visualizar no dashboard os fluxos, as exchanges (`price_events`) e as filas ativas (`test_backoffice_events_queue`).
 
 ---
 
-## 📥 Estrutura de Mensagens Publicadas (RabbitMQ Exchange `price_events`)
+## 📥 Estrutura de Mensagens de Eventos
+
+O formato das mensagens JSON publicadas e processadas é:
 
 ### 1. Sucesso (`price.scraped`)
-Publicado quando a página foi acessada e os dados do produto foram extraídos com sucesso.
-
+Disparado para produtos raspados com sucesso.
 ```json
 {
   "event": "price.scraped",
-  "product_id": 1,
+  "product_id": null,
   "url": "https://www.amazon.com.br/dp/B09B8VGCR8",
   "title": "Echo Dot (Geração mais recente) | Smart speaker com Alexa",
   "price": 329.00,
@@ -143,15 +152,14 @@ Publicado quando a página foi acessada e os dados do produto foram extraídos c
 ```
 
 ### 2. Falha (`price.failed`)
-Publicado em caso de falha de carregamento ou extração do produto.
-
+Disparado quando a raspagem de um link falha ou retorna página não encontrada.
 ```json
 {
   "event": "price.failed",
-  "product_id": 2,
+  "product_id": null,
   "url": "https://www.amazon.com.br/dp/B082XYKBLT",
   "reason": "not_found",
   "scraped_at": "2026-08-29T23:05:00Z"
 }
 ```
-*Razões de erro comuns no campo `reason`: `"not_found"` (404), `"blocked"` (IP bloqueado ou captcha persistente), `"timeout"` (tempo de carregamento estourado) ou `"parse_error"` (página mudou de layout).*
+*Razões de falha comuns no campo `reason`: `"not_found"` (404), `"blocked"` (IP bloqueado ou captcha persistente), `"timeout"` (tempo excedido de carregamento) ou `"parse_error"` (página mudou de layout).*
