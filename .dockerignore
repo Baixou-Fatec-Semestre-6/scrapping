@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+scraped_results.json
+.git/
+.gitignore
+tests/
+test_*.py
+README.md
