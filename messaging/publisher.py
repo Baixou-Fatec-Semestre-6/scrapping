@@ -89,7 +89,8 @@ class RabbitMQPublisher:
         
         routing_key = "price.scraped"
         try:
-            confirmed = self.channel.basic_publish(
+            # Publisher confirms sinalizam falhas por excecao; sucesso retorna None.
+            self.channel.basic_publish(
                 exchange=self.exchange,
                 routing_key=routing_key,
                 body=json.dumps(payload),
@@ -98,8 +99,6 @@ class RabbitMQPublisher:
                     delivery_mode=pika.DeliveryMode.Persistent
                 )
             )
-            if not confirmed:
-                raise RuntimeError("rabbitmq_publish_not_confirmed")
             logger.info(f"Evento '{routing_key}' publicado com sucesso para URL: {url}")
             return True
         except Exception as e:
@@ -134,7 +133,8 @@ class RabbitMQPublisher:
         
         routing_key = "price.failed"
         try:
-            confirmed = self.channel.basic_publish(
+            # Publisher confirms sinalizam falhas por excecao; sucesso retorna None.
+            self.channel.basic_publish(
                 exchange=self.exchange,
                 routing_key=routing_key,
                 body=json.dumps(payload),
@@ -143,8 +143,6 @@ class RabbitMQPublisher:
                     delivery_mode=pika.DeliveryMode.Persistent
                 )
             )
-            if not confirmed:
-                raise RuntimeError("rabbitmq_publish_not_confirmed")
             logger.info(f"Evento '{routing_key}' publicado com sucesso para URL: {url} (razão: {reason})")
             return True
         except Exception as e:
