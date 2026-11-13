@@ -72,9 +72,9 @@ RABBITMQ_URL=amqps://usuario:senha@jackal.rmq.cloudamqp.com/usuario
 # Credenciais individuais (Caso vá usar o RabbitMQ rodando no Docker local)
 RABBITMQ_HOST=localhost
 RABBITMQ_PORT=5672
-RABBITMQ_USER=guest
-RABBITMQ_PASS=guest
-RABBITMQ_EXCHANGE_EVENTS=price_events
+RABBITMQ_USER=baixou_app
+RABBITMQ_PASSWORD=local_dev_password
+RABBITMQ_EXCHANGE=baixou
 
 # --- Configurações do Scraper ---
 SCRAPE_DELAY_MIN=2
@@ -94,19 +94,18 @@ OUTPUT_JSON_PATH=scraped_results.json
 python main.py --mode worker
 ```
 
-O worker consome `scrape_requests`. O comando esperado é:
+O worker consome `scraper.requests` na exchange `baixou`. O comando esperado é:
 
 ```json
 {
-  "request_id": "01J...",
-  "product_id": 123,
+  "event_id": "01J...",
   "listing_id": 456,
   "store": "amazon",
   "url": "https://www.amazon.com.br/dp/B09B8VGCR8"
 }
 ```
 
-Falhas temporárias (`blocked` e `timeout`) passam por `scrape_requests.retry`. Comandos inválidos vão para `scrape_requests.dlq`. Depois do limite de tentativas, o worker publica `price.failed`.
+Falhas temporárias (`blocked` e `timeout`) passam por `scraper.requests.retry`. Depois do limite de tentativas, o worker publica `scrape.failed`. Resultados válidos usam `scrape.completed`. O comando inválido é rejeitado sem requeue; a fila de entrada do core não tem dead-letter exchange, portanto ele é descartado. Consulte [INTEGRACAO_CORE.md](INTEGRACAO_CORE.md) para a configuração completa.
 
 ### Ambiente completo via Docker
 
@@ -139,7 +138,7 @@ preço, parsing de título/imagem e rejeição de páginas sem preço.
   com preço nulo.
 - `blocked` e `timeout` são retentados. `not_found` e `parse_error` geram falha
   definitiva.
-- O Core deve deduplicar eventos por `request_id`, pois a entrega é
+- O Core deve deduplicar eventos por `event_id`, pois a entrega é
   *at-least-once*.
 
 Para enviar um comando sem depender do backoffice:
@@ -194,9 +193,9 @@ Criamos uma simulação completa onde você pode visualizar as mensagens trafega
 
 ---
 
-## 📥 Estrutura de Mensagens de Eventos
+## 📥 Estrutura de Mensagens de Eventos do modo batch
 
-O formato das mensagens JSON publicadas e processadas é:
+Os exemplos abaixo descrevem o publicador legado do modo batch e o arquivo JSON de coleta. O worker integrado usa `event_id`, `listing_id`, `scrape.completed` e `scrape.failed`, conforme `INTEGRACAO_CORE.md`. Não publique o contrato batch diretamente na fila de resultados do core.
 
 ### 1. Sucesso (`price.scraped`)
 Disparado para produtos raspados com sucesso.

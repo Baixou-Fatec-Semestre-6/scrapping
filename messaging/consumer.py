@@ -6,7 +6,7 @@ from typing import Any
 
 import pika
 
-from messaging.publisher import RabbitMQPublisher
+from messaging.contract_publisher import ContractPublisher
 from messaging.topology import RabbitMQTopology, connection_parameters
 from parser.amazon_scraper import AmazonScraper
 
@@ -27,7 +27,7 @@ class RabbitMQConsumer:
         self.connection: pika.BlockingConnection | None = None
         self.channel = None
         self.scraper = AmazonScraper()
-        self.publisher = RabbitMQPublisher(required=True)
+        self.publisher = ContractPublisher(required=True)
 
     @staticmethod
     def _decode(body: bytes) -> dict[str, Any]:
@@ -38,8 +38,10 @@ class RabbitMQConsumer:
 
         if not isinstance(payload, dict):
             raise InvalidScrapeRequest("payload_must_be_an_object")
-        if not payload.get("request_id"):
-            raise InvalidScrapeRequest("request_id_is_required")
+        if not payload.get("event_id"):
+            raise InvalidScrapeRequest("event_id_is_required")
+        if payload.get("listing_id") is None:
+            raise InvalidScrapeRequest("listing_id_is_required")
         if not payload.get("url"):
             raise InvalidScrapeRequest("url_is_required")
         return payload
@@ -79,11 +81,11 @@ class RabbitMQConsumer:
             channel.basic_nack(method.delivery_tag, requeue=False)
             return
 
-        request_id = str(payload["request_id"])
+        event_id = str(payload["event_id"])
         retry_count = self._retry_count(properties)
         logger.info(
-            "Processando request_id=%s tentativa=%s url=%s",
-            request_id,
+            "Processando event_id=%s tentativa=%s url=%s",
+            event_id,
             retry_count + 1,
             payload["url"],
         )
@@ -91,26 +93,23 @@ class RabbitMQConsumer:
         try:
             result = self.scraper.scrape(payload["url"])
             self.publisher.publish_scraped_event(
-                request_id=request_id,
-                product_id=payload.get("product_id"),
-                listing_id=payload.get("listing_id"),
-                store=payload.get("store", "amazon"),
-                url=result["url"],
+                event_id=event_id,
+                listing_id=payload["listing_id"],
                 title=result["title"],
                 price=result["price"],
                 currency=result["currency"],
                 image_url=result["image_url"],
             )
             channel.basic_ack(method.delivery_tag)
-            logger.info("Raspagem concluída request_id=%s", request_id)
+            logger.info("Raspagem concluída event_id=%s", event_id)
         except Exception as exc:
             reason = str(exc)
             retryable = reason in {"blocked", "timeout"}
             if retryable and retry_count < self.max_retries:
                 next_retry = retry_count + 1
                 logger.warning(
-                    "Falha temporária request_id=%s; enviando para retry %s/%s",
-                    request_id,
+                    "Falha temporária event_id=%s; enviando para retry %s/%s",
+                    event_id,
                     next_retry,
                     self.max_retries,
                 )
@@ -118,25 +117,23 @@ class RabbitMQConsumer:
                 channel.basic_ack(method.delivery_tag)
                 return
 
-            normalized_reason = (
-                reason
-                if reason in {"blocked", "timeout", "not_found", "parse_error"}
-                else "parse_error"
-            )
+            normalized_reason = {
+                "blocked": "A loja bloqueou o acesso à página.",
+                "timeout": "A loja demorou demais para responder.",
+                "not_found": "Página do produto não encontrada.",
+                "parse_error": "Não foi possível identificar o preço na página.",
+            }.get(reason, "Não foi possível processar a página do produto.")
             try:
                 self.publisher.publish_failed_event(
-                    request_id=request_id,
-                    product_id=payload.get("product_id"),
-                    listing_id=payload.get("listing_id"),
-                    store=payload.get("store", "amazon"),
-                    url=payload["url"],
+                    event_id=event_id,
+                    listing_id=payload["listing_id"],
                     reason=normalized_reason,
                 )
                 channel.basic_ack(method.delivery_tag)
             except Exception:
                 logger.exception(
-                    "Não foi possível publicar a falha request_id=%s; mensagem será reprocessada",
-                    request_id,
+                    "Não foi possível publicar a falha event_id=%s; mensagem será reprocessada",
+                    event_id,
                 )
                 channel.basic_nack(method.delivery_tag, requeue=True)
 

@@ -1,22 +1,4 @@
 services:
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    container_name: baixou_rabbitmq
-    restart: unless-stopped
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
-    volumes:
-      - rabbitmq_data:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
   scraper-worker:
     build: .
     container_name: baixou_scraper_worker
@@ -24,10 +6,18 @@ services:
     env_file: .env
     environment:
       RABBITMQ_URL: ""
-      RABBITMQ_HOST: rabbitmq
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+      RABBITMQ_HOST: core_rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${CORE_RABBITMQ_USER:-baixou_app}
+      RABBITMQ_PASSWORD: ${CORE_RABBITMQ_PASSWORD:-local_dev_password}
+      RABBITMQ_EXCHANGE: baixou
+      RABBITMQ_QUEUE_REQUESTS: scraper.requests
+      RABBITMQ_EXCHANGE_RETRY: baixou.retry
+      RABBITMQ_EXCHANGE_DLX: baixou.dlx
+    networks:
+      - core
 
-volumes:
-  rabbitmq_data:
+networks:
+  core:
+    external: true
+    name: ${CORE_DOCKER_NETWORK:-docker_core}
