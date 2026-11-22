@@ -92,6 +92,13 @@ class RabbitMQConsumer:
 
         try:
             result = self.scraper.scrape(payload["url"])
+        except Exception as exc:
+            self._handle_scrape_failure(channel, method, properties, body, payload, retry_count, exc)
+            return
+
+        # Falha ao publicar e problema do broker, nao da pagina: nao vira
+        # scrape.failed. A mensagem volta para a fila e e reprocessada.
+        try:
             self.publisher.publish_scraped_event(
                 event_id=event_id,
                 listing_id=payload["listing_id"],
@@ -100,42 +107,51 @@ class RabbitMQConsumer:
                 currency=result["currency"],
                 image_url=result["image_url"],
             )
-            channel.basic_ack(method.delivery_tag)
-            logger.info("Raspagem concluída event_id=%s", event_id)
-        except Exception as exc:
-            reason = str(exc)
-            retryable = reason in {"blocked", "timeout"}
-            if retryable and retry_count < self.max_retries:
-                next_retry = retry_count + 1
-                logger.warning(
-                    "Falha temporária event_id=%s; enviando para retry %s/%s",
-                    event_id,
-                    next_retry,
-                    self.max_retries,
-                )
-                self._publish_retry(body, properties, next_retry)
-                channel.basic_ack(method.delivery_tag)
-                return
+        except Exception:
+            logger.exception(
+                "Não foi possível publicar o resultado event_id=%s; mensagem será reprocessada",
+                event_id,
+            )
+            channel.basic_nack(method.delivery_tag, requeue=True)
+            return
+        channel.basic_ack(method.delivery_tag)
+        logger.info("Raspagem concluída event_id=%s", event_id)
 
-            normalized_reason = {
-                "blocked": "A loja bloqueou o acesso à página.",
-                "timeout": "A loja demorou demais para responder.",
-                "not_found": "Página do produto não encontrada.",
-                "parse_error": "Não foi possível identificar o preço na página.",
-            }.get(reason, "Não foi possível processar a página do produto.")
-            try:
-                self.publisher.publish_failed_event(
-                    event_id=event_id,
-                    listing_id=payload["listing_id"],
-                    reason=normalized_reason,
-                )
-                channel.basic_ack(method.delivery_tag)
-            except Exception:
-                logger.exception(
-                    "Não foi possível publicar a falha event_id=%s; mensagem será reprocessada",
-                    event_id,
-                )
-                channel.basic_nack(method.delivery_tag, requeue=True)
+    def _handle_scrape_failure(self, channel, method, properties, body, payload, retry_count, exc) -> None:
+        event_id = str(payload["event_id"])
+        reason = str(exc)
+        retryable = reason in {"blocked", "timeout"}
+        if retryable and retry_count < self.max_retries:
+            next_retry = retry_count + 1
+            logger.warning(
+                "Falha temporária event_id=%s; enviando para retry %s/%s",
+                event_id,
+                next_retry,
+                self.max_retries,
+            )
+            self._publish_retry(body, properties, next_retry)
+            channel.basic_ack(method.delivery_tag)
+            return
+
+        normalized_reason = {
+            "blocked": "A loja bloqueou o acesso à página.",
+            "timeout": "A loja demorou demais para responder.",
+            "not_found": "Página do produto não encontrada.",
+            "parse_error": "Não foi possível identificar o preço na página.",
+        }.get(reason, "Não foi possível processar a página do produto.")
+        try:
+            self.publisher.publish_failed_event(
+                event_id=event_id,
+                listing_id=payload["listing_id"],
+                reason=normalized_reason,
+            )
+            channel.basic_ack(method.delivery_tag)
+        except Exception:
+            logger.exception(
+                "Não foi possível publicar a falha event_id=%s; mensagem será reprocessada",
+                event_id,
+            )
+            channel.basic_nack(method.delivery_tag, requeue=True)
 
     def run(self) -> None:
         self.connection = pika.BlockingConnection(connection_parameters())
