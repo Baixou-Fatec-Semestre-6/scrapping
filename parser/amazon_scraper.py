@@ -24,25 +24,39 @@ HEADERS = {
     "Cache-Control": "max-age=0"
 }
 
+SUPPORTED_AMAZON_HOSTS = {
+    "amazon.com",
+    "amazon.com.br",
+    "amazon.es",
+    "amazon.co.uk",
+}
+
+
 def clean_amazon_url(url: str) -> str:
     """Extrai o ASIN e o domínio da URL da Amazon para gerar uma URL limpa."""
     try:
         parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-        if "amazon" in domain:
-            if not domain.startswith("www."):
-                domain = "www." + domain
-        else:
-            domain = "www.amazon.com.br"
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError("invalid_url")
+
+        domain = (parsed.hostname or "").lower()
+        normalized_domain = domain.removeprefix("www.")
+        if normalized_domain not in SUPPORTED_AMAZON_HOSTS:
+            raise ValueError("unsupported_store")
+
+        domain = f"www.{normalized_domain}"
         
         # Procura por /dp/ASIN ou /gp/product/ASIN
         match = re.search(r'/(dp|gp/product)/([A-Za-z0-9]{10})', url)
         if match:
             asin = match.group(2).upper()
             return f"https://{domain}/dp/{asin}"
+        raise ValueError("invalid_amazon_product_url")
+    except ValueError:
+        raise
     except Exception as e:
         logger.error(f"Erro ao limpar URL {url}: {e}")
-    return url
+        raise ValueError("invalid_url") from e
 
 def is_blocked_or_captcha(html_content: str, status_code: int = 200) -> bool:
     """Verifica se fomos bloqueados ou recebemos CAPTCHA."""
@@ -66,7 +80,10 @@ class AmazonScraper:
 
     def scrape(self, url: str) -> dict:
         """Tenta raspar a URL usando HTTPX. Caso seja bloqueado, faz o fallback para o Playwright."""
-        cleaned_url = clean_amazon_url(url)
+        try:
+            cleaned_url = clean_amazon_url(url)
+        except ValueError as exc:
+            raise Exception("not_found") from exc
         logger.info(f"Iniciando raspagem de: {cleaned_url}")
         
         # Determina a moeda com base no domínio
@@ -207,6 +224,10 @@ class AmazonScraper:
                     pass
 
         # 3. Extração da URL da Imagem
+        if price is None or price <= 0:
+            logger.error("Não foi possível extrair um preço válido do produto.")
+            raise Exception("parse_error")
+
         image_url = self._extract_image_url(soup)
 
         return {
@@ -238,7 +259,16 @@ class AmazonScraper:
                 cleaned = cleaned.replace(',', '')
         elif ',' in cleaned:
             # Padrão Brasileiro simplificado (1234,56)
-            cleaned = cleaned.replace(',', '.')
+            integer, decimal = cleaned.rsplit(',', 1)
+            cleaned = (
+                integer + decimal
+                if len(decimal) == 3
+                else integer + '.' + decimal
+            )
+        elif '.' in cleaned:
+            integer, decimal = cleaned.rsplit('.', 1)
+            if len(decimal) == 3:
+                cleaned = integer + decimal
             
         try:
             return float(cleaned)

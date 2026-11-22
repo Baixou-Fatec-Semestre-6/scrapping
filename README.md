@@ -1,5 +1,7 @@
 # Amazon Price Scraper Service
 
+O serviço possui um worker RabbitMQ contínuo, com ACK manual, publisher confirms, retry com TTL e dead-letter queue. O modo em lote permanece disponível para descoberta inicial de catálogo.
+
 Este é o serviço de **Scraping de Preços da Amazon**, desenvolvido em Python. Ele opera de forma assíncrona para varrer páginas de categorias de tecnologia da Amazon, paginar seus resultados, raspar os dados dos produtos individuais (Título, Preço atual, Moeda e Imagem) de forma resiliente contra bloqueios e publicar os eventos de sucesso ou falha em um Broker de Mensageria **RabbitMQ** ou gerar um relatório JSON consolidado localmente.
 
 ---
@@ -17,7 +19,7 @@ Este é o serviço de **Scraping de Preços da Amazon**, desenvolvido em Python.
 
 ## 📋 Pré-requisitos
 
-1. **Python 3.10+** (Testado e homologado no Python 3.14.7).
+1. **Python 3.10+**.
 2. **RabbitMQ** (Instalado localmente via Docker ou uma instância de nuvem gratuita no **CloudAMQP**).
 
 ---
@@ -70,9 +72,9 @@ RABBITMQ_URL=amqps://usuario:senha@jackal.rmq.cloudamqp.com/usuario
 # Credenciais individuais (Caso vá usar o RabbitMQ rodando no Docker local)
 RABBITMQ_HOST=localhost
 RABBITMQ_PORT=5672
-RABBITMQ_USER=guest
-RABBITMQ_PASS=guest
-RABBITMQ_EXCHANGE_EVENTS=price_events
+RABBITMQ_USER=baixou_app
+RABBITMQ_PASSWORD=local_dev_password
+RABBITMQ_EXCHANGE=baixou
 
 # --- Configurações do Scraper ---
 SCRAPE_DELAY_MIN=2
@@ -86,9 +88,68 @@ OUTPUT_JSON_PATH=scraped_results.json
 
 ## 🏃 Como Executar e Testar
 
+### Worker RabbitMQ (modo padrão)
+
+```bash
+python main.py --mode worker
+```
+
+O worker consome `scraper.requests` na exchange `baixou`. O comando esperado é:
+
+```json
+{
+  "event_id": "01J...",
+  "listing_id": 456,
+  "store": "amazon",
+  "url": "https://www.amazon.com.br/dp/B09B8VGCR8"
+}
+```
+
+Falhas temporárias (`blocked` e `timeout`) passam por `scraper.requests.retry`. Depois do limite de tentativas, o worker publica `scrape.failed`. Resultados válidos usam `scrape.completed`. O comando inválido é rejeitado sem requeue; a fila de entrada do core não tem dead-letter exchange, portanto ele é descartado. Consulte [INTEGRACAO_CORE.md](INTEGRACAO_CORE.md) para a configuração completa.
+
+### Ambiente completo via Docker
+
+Copie `.env.example` para `.env` e execute:
+
+```bash
+docker-compose up --build -d
+docker-compose logs -f scraper-worker
+```
+
+RabbitMQ Management: `http://localhost:15672`.
+
+### Validação local
+
+Antes de subir o worker, execute a compilação e a suíte automatizada:
+
+```powershell
+.\scripts\check.ps1
+```
+
+Os testes cobrem o contrato das mensagens, normalização de URL, formatos de
+preço, parsing de título/imagem e rejeição de páginas sem preço.
+
+### Contrato operacional
+
+- O worker aceita atualmente apenas `store=amazon`.
+- URLs devem ser páginas de produto Amazon contendo `/dp/ASIN` ou
+  `/gp/product/ASIN`.
+- Uma coleta sem preço válido é tratada como `parse_error`; nunca como sucesso
+  com preço nulo.
+- `blocked` e `timeout` são retentados. `not_found` e `parse_error` geram falha
+  definitiva.
+- O Core deve deduplicar eventos por `event_id`, pois a entrega é
+  *at-least-once*.
+
+Para enviar um comando sem depender do backoffice:
+
+```bash
+python publish_test_request.py "https://www.amazon.com.br/dp/B09B8VGCR8"
+```
+
 O script principal `main.py` possui dois modos de execução:
 
-### A. Executar em Lote (Modo Batch - Padrão)
+### A. Executar em Lote
 O Scraper inicia navegando de forma paginada pelas categorias de Tecnologia da Amazon Brasil, descobrindo as URLs dos produtos em tempo real. Ele raspará os detalhes de cada produto até atingir a meta de sucessos definida em `MAX_CRAWL_PRODUCTS` (ex: **100 produtos**).
 
 Para rodar (ideal para rodar 2 vezes ao dia por exemplo):
@@ -132,9 +193,9 @@ Criamos uma simulação completa onde você pode visualizar as mensagens trafega
 
 ---
 
-## 📥 Estrutura de Mensagens de Eventos
+## 📥 Estrutura de Mensagens de Eventos do modo batch
 
-O formato das mensagens JSON publicadas e processadas é:
+Os exemplos abaixo descrevem o publicador legado do modo batch e o arquivo JSON de coleta. O worker integrado usa `event_id`, `listing_id`, `scrape.completed` e `scrape.failed`, conforme `INTEGRACAO_CORE.md`. Não publique o contrato batch diretamente na fila de resultados do core.
 
 ### 1. Sucesso (`price.scraped`)
 Disparado para produtos raspados com sucesso.

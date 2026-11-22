@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from messaging.publisher import RabbitMQPublisher
 from parser.amazon_scraper import AmazonScraper
 from parser.amazon_crawler import AmazonCrawler
+from messaging.consumer import RabbitMQConsumer
 
 # Configura o logger padrão para exibir no console de forma bonita e limpa
 logging.basicConfig(
@@ -123,13 +124,17 @@ def run_test(url: str):
             f"Erro:       {e}"
         )
 
+def run_worker():
+    """Consome continuamente comandos de raspagem vindos do RabbitMQ."""
+    RabbitMQConsumer().run()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Serviço de Scrape de Preços da Amazon em Python (Modo Lote)")
     parser.add_argument(
         "--mode", 
-        choices=["batch", "test"], 
-        default="batch",
-        help="Modo de execução: 'batch' (lote dinâmico) ou 'test' (teste local)"
+        choices=["worker", "batch", "test"],
+        default="worker",
+        help="Modo de execução: 'worker' (RabbitMQ), 'batch' (catálogo) ou 'test'"
     )
     parser.add_argument(
         "--url",
@@ -138,7 +143,9 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
-    if args.mode == "batch":
+    if args.mode == "worker":
+        run_worker()
+    elif args.mode == "batch":
         run_batch()
     elif args.mode == "test":
         if not args.url:
